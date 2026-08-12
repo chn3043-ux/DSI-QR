@@ -3,181 +3,140 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>식대 QR 스캐너</title>
-  <!-- jsQR을 받아올 CDN과, 스캔 성공 후 돌아갈 Apps Script 도메인에 미리 연결을 준비해둔다 -->
-  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
-  <link rel="preconnect" href="https://script.google.com" crossorigin>
+  <title>식대 QR 스캐너 (사진 촬영 방식)</title>
   <style>
     * { box-sizing: border-box; }
     body {
-      margin: 0; min-height: 100vh; background: #000;
+      margin: 0; min-height: 100vh; background: #f9fafb;
       font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-      color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: #111827; display: flex; flex-direction: column; align-items: center; justify-content: center;
       padding: 20px;
     }
-    .wrap { width: 100%; max-width: 420px; }
-    h1 { font-size: 16px; text-align: center; margin: 0 0 14px; font-weight: 700; }
-    .viewport {
-      position: relative; width: 100%; aspect-ratio: 1 / 1; background: #111; border-radius: 16px; overflow: hidden;
+    .wrap { width: 100%; max-width: 420px; text-align: center; }
+    h1 { font-size: 18px; margin: 0 0 20px; font-weight: 700; color: #111827; }
+    
+    /* 카메라 실행 버튼 스타일 */
+    .scan-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 100%; padding: 16px 24px; background-color: #2563eb; color: white;
+      border: none; border-radius: 12px; font-size: 16px; font-weight: 600;
+      cursor: pointer; transition: background-color 0.2s; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     }
-    .viewport video { width: 100%; height: 100%; object-fit: cover; }
-    .frame { position: absolute; inset: 14%; border: 3px solid #22c55e; border-radius: 16px; pointer-events: none; }
-    .hint { font-size: 13px; text-align: center; color: #d1d5db; margin-top: 14px; min-height: 40px; line-height: 1.5; white-space: pre-line; }
-    .ok { color: #4ade80; font-weight: 700; }
-    .err { color: #f87171; }
-    .back-link {
-      display: block; text-align: center; margin-top: 18px; font-size: 13px; color: #93c5fd; text-decoration: underline;
-    }
-    canvas { display: none; }
+    .scan-btn:active { background-color: #1d4ed8; }
+    .scan-btn-icon { margin-right: 8px; font-size: 20px; }
+
+    /* 숨겨진 file input */
+    #qr-input { display: none; }
+
+    .hint { font-size: 14px; color: #6b7280; margin-top: 20px; min-height: 40px; line-height: 1.5; white-space: pre-line; }
+    .ok { color: #16a34a; font-weight: 700; }
+    .err { color: #dc2626; }
+    
+    .back-link { display: block; text-align: center; margin-top: 24px; font-size: 14px; color: #2563eb; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>🍽 식당 QR 스캔</h1>
-    <div class="viewport">
-      <video id="video" playsinline autoplay muted></video>
-      <div class="frame"></div>
-    </div>
-    <div class="hint" id="hint">카메라를 준비하는 중...</div>
+    <h1>🍽 식당 QR 체크인</h1>
+    
+    <!-- 이 버튼을 누르면 아래 hidden input이 클릭되어 카메라가 실행됨 -->
+    <button class="scan-btn" onclick="document.getElementById('qr-input').click();">
+      <span class="scan-btn-icon">📷</span>
+      QR 코드 촬영하여 스캔
+    </button>
+    
+    <!-- 모바일에서 카메라 촬영을 유도하는 핵심 input 태그 -->
+    <input type="file" accept="image/*" capture="environment" id="qr-input">
+
+    <div class="hint" id="hint">아래 버튼을 눌러 식당 QR 코드를 촬영해 주세요.</div>
     <a href="#" id="backLink" class="back-link" style="display:none;">← 취소하고 돌아가기</a>
   </div>
-  <canvas id="canvas"></canvas>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
-<script>
-  // 1. 단순 텍스트, 숫자, 다른 URL도 모두 인식하도록 도메인 검증 완화/수정
-  var ALLOWED_HOSTS = ['script.google.com', 'script.googleusercontent.com'];
+  <!-- QR 인식 라이브러리 (html5-qrcode로 변경, 사진 분석에 더 강력함) -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script>
+    var hintEl = document.getElementById('hint');
+    var backLink = document.getElementById('backLink');
+    var qrInput = document.getElementById('qr-input');
+    
+    // 허용된 호스트 설정 (이전과 동일)
+    var ALLOWED_HOSTS = ['script.google.com', 'script.googleusercontent.com'];
 
-  var hintEl = document.getElementById('hint');
-  var backLink = document.getElementById('backLink');
-  var video = document.getElementById('video');
-  var canvas = document.getElementById('canvas');
-  var stream = null;
-  var rafId = null;
-  var active = false;
-  var decoded = false;
-
-  function setHint(text, cls) {
-    hintEl.textContent = text;
-    hintEl.className = 'hint' + (cls ? ' ' + cls : '');
-  }
-
-  function setupBackLink() {
-    var params = new URLSearchParams(location.search);
-    var back = params.get('back');
-    if (back) {
-      try {
-        var backUrl = new URL(back);
-        backLink.href = backUrl.href;
-        backLink.style.display = 'block';
-      } catch (e) {}
-    }
-  }
-
-  function isAllowedUrl(text) {
-    // QR 데이터가 URL 형태가 아닌 단순 텍스트/코드인 경우에도 허용하려면 아래 if문을 주석 처리하거나 true 반환
-    try {
-      var u = new URL(text);
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
-      return ALLOWED_HOSTS.indexOf(u.hostname) !== -1;
-    } catch (e) {
-      // URL 형태가 아닌 단순 데이터(문자, 숫자)인 경우 true 처리
-      return true; 
-    }
-  }
-
-  function startCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setHint('이 브라우저는 카메라 기능을 지원하지 않습니다.\nSafari 또는 Chrome으로 열어주세요.', 'err');
-      return;
+    function setHint(text, cls) {
+      hintEl.textContent = text;
+      hintEl.className = 'hint' + (cls ? ' ' + cls : '');
     }
 
-    // 2. 고해상도(1080p 이상) 및 후면 카메라 접사 초점 옵션 추가
-    var constraints = {
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
+    // 뒤로가기 링크 설정 (이전과 동일)
+    function setupBackLink() {
+      var params = new URLSearchParams(location.search);
+      var back = params.get('back');
+      if (back) {
+        try {
+          var backUrl = new URL(back);
+          backLink.href = backUrl.href;
+          backLink.style.display = 'block';
+        } catch (e) {}
       }
-    };
+    }
 
-    navigator.mediaDevices.getUserMedia(constraints)
-      .catch(function() { return navigator.mediaDevices.getUserMedia({ video: true }); })
-      .then(function(s) {
-        stream = s;
-        video.srcObject = s;
-        video.play();
-        active = true;
-        setHint('식당에 부착된 QR코드를 화면 중앙에 맞춰주세요');
-        rafId = requestAnimationFrame(scanLoop);
-      })
-      .catch(function(err) {
-        setHint('카메라를 사용할 수 없습니다.\n권한을 허용해 주세요.', 'err');
-      });
-  }
-
-  function stopCamera() {
-    active = false;
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
-    if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
-  }
-
-  function scanLoop() {
-    if (!active) return;
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      var ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
-      var code = null;
+    function isAllowedUrl(text) {
       try {
-        // inversionAttempts 옵션을 'attemptBoth'로 변경하여 어두운 배경/반사 QR 인식률 대폭 향상
-        code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' }); 
-      } catch (e) {}
+        var u = new URL(text);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+        return ALLOWED_HOSTS.indexOf(u.hostname) !== -1;
+      } catch (e) { return true; } // URL이 아니면 true (데이터로 처리)
+    }
 
-      if (code && code.data) {
-        onDecoded(code.data);
+    // 파일 입력값 변경 시 (사진 촬영 완료 시) 실행되는 로직
+    qrInput.addEventListener('change', function(e) {
+      if (e.target.files.length === 0) {
+        setHint('사진이 선택되지 않았습니다.', 'err');
         return;
       }
-    }
-    rafId = requestAnimationFrame(scanLoop);
-  }
+      
+      var imageFile = e.target.files[0];
+      setHint('사진 분석 중...', 'ok');
 
-  function onDecoded(text) {
-    if (decoded) return;
-    
-    // 만약 QR 안에 URL이 들어가서 체크인 웹앱으로 이동시키는 형태가 아니라
-    // 단순 값 전달이라면 아래 조건 판단 로직을 프로젝트 구조에 맞게 수정하세요.
-    if (!isAllowedUrl(text)) {
-      setHint('알 수 없는 QR입니다. 식대 체크인용 QR을 스캔해주세요.', 'err');
-      rafId = requestAnimationFrame(scanLoop);
-      return;
-    }
-    
-    decoded = true;
-    stopCamera();
-    setHint('인식 완료! (' + text + ')\n이동 중...', 'ok');
-    
-    setTimeout(function() {
-      // URL이면 해당 주소로 이동, URL이 아니면 이전 파라미터(back)에 데이터 얹어서 이동
-      if (text.startsWith('http://') || text.startsWith('https://')) {
-        location.href = text;
-      } else {
-        var params = new URLSearchParams(location.search);
-        var back = params.get('back');
-        if (back) {
-          var joinChar = back.indexOf('?') !== -1 ? '&' : '?';
-          location.href = back + joinChar + 'qrData=' + encodeURIComponent(text);
-        }
+      // html5-qrcode 라이브러리를 사용하여 이미지 파일에서 QR 코드 스캔
+      const html5QrCode = new Html5Qrcode("hint"); // dummy ID, 사용안함
+      html5QrCode.scanFile(imageFile, true)
+        .then(function(decodedText) {
+          // QR 인식 성공
+          onDecoded(decodedText);
+        })
+        .catch(function(err) {
+          // QR 인식 실패
+          console.error("QR 인식 실패:", err);
+          setHint('QR 코드를 인식할 수 없습니다.\n사진을 다시 명확하게 촬영해 주세요.', 'err');
+        });
+    });
+
+    function onDecoded(text) {
+      if (!isAllowedUrl(text)) {
+        setHint('알 수 없는 QR입니다. 식대 체크인용 QR을 스캔해주세요.', 'err');
+        return;
       }
-    }, 400);
-  }
+      
+      setHint('인식 완료! (' + text + ')\n이동 중...', 'ok');
+      
+      setTimeout(function() {
+        // URL이면 이동, 아니면 이전 페이지(back)로 데이터 전달
+        if (text.startsWith('http://') || text.startsWith('https://')) {
+          location.href = text;
+        } else {
+          var params = new URLSearchParams(location.search);
+          var back = params.get('back');
+          if (back) {
+            var joinChar = back.indexOf('?') !== -1 ? '&' : '?';
+            location.href = back + joinChar + 'qrData=' + encodeURIComponent(text);
+          }
+        }
+      }, 400);
+    }
 
-  setupBackLink();
-  startCamera();
-</script>
+    setupBackLink();
+  </script>
 </body>
 </html>
